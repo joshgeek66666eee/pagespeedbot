@@ -28,6 +28,7 @@ concurrency:
 jobs:
   gsc-index:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,8 +50,14 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SLACK_CHANNEL: "#seo-team"
-          # Reuses the PageSpeed URL list by default; point at a dedicated
-          # list here if you want to inspect a different set of pages.
-          GSC_URLS_FILE: ".github/gsc-urls.txt"
+          # Build the URL list straight from the sitemap. INCLUDE selects which
+          # page types to check; SAMPLE_PER_SITEMAP=0 means ALL URLs of each type.
+          GSC_SITEMAP_URL: "https://stripo.email/sitemap_index.xml"
+          # Types: blog articles, template categories, integrations, tool reviews.
+          GSC_SITEMAP_INCLUDE: "article,templateCategory,integration,toolReviewCategory"
+          GSC_SAMPLE_PER_SITEMAP: "0"     # 0 = all URLs of each included type
+          GSC_MAX_URLS: "1800"            # safety cap under the 2000/day quota
+          # Pages that have no dedicated sitemap, checked explicitly:
+          GSC_EXTRA_URLS: "https://stripo.email/,https://stripo.email/templates/"
           ALWAYS_REPORT: ${{ github.event.inputs.always_report || 'false' }}
         run: python .github/scripts/gsc_index_check.py
