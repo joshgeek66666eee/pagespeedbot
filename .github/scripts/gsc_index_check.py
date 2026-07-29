@@ -40,10 +40,12 @@ Env:
   ALWAYS_REPORT             (optional)  "true" -> post a digest even if all clean
 """
 
+import concurrent.futures
 import gzip
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -232,15 +234,35 @@ def build_credentials(sa_json):
     return creds, google.auth.transport.requests.Request()
 
 
-def current_token(creds, authreq):
-    """Return a valid access token, refreshing it when it is missing/expired.
+def current_token(creds, authreq, lock):
+    """Return a valid access token, refreshing it when missing/expired.
 
     Service-account tokens live ~1h; a full run over 1000+ URLs outlasts that,
-    so we re-check before every request instead of fetching a token once.
+    so we re-check before every request. Guarded by a lock for thread safety.
     """
-    if not creds.valid:
-        creds.refresh(authreq)
-    return creds.token
+    with lock:
+        if not creds.valid:
+            creds.refresh(authreq)
+        return creds.token
+
+
+class RateLimiter:
+    """Spaces request starts to at most `per_second`, across threads."""
+
+    def __init__(self, per_second):
+        self._interval = 1.0 / per_second if per_second > 0 else 0.0
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self):
+        if not self._interval:
+            return
+        with self._lock:
+            now = time.monotonic()
+            if now < self._next:
+                time.sleep(self._next - now)
+                now = time.monotonic()
+            self._next = now + self._interval
 
 
 def inspect_url(url, site_url, token, tries=4):
@@ -434,30 +456,38 @@ def main():
         sys.exit(1)
 
     creds, authreq = build_credentials(sa_json)
-    print(f"Inspecting {len(urls)} URL(s) against {site_url}")
+    tok_lock = threading.Lock()
+    workers = int(env("GSC_WORKERS", "8"))
+    limiter = RateLimiter(float(env("GSC_MAX_RPS", "8")))  # 8/s = 480/min < 600 cap
+    print(f"Inspecting {len(urls)} URL(s) against {site_url} ({workers} workers)")
+
+    def inspect_one(url):
+        limiter.wait()
+        r = evaluate(url, inspect_url(url, site_url, current_token(creds, authreq, tok_lock)))
+        if "error" in r and r["error"].startswith("HTTP 401"):
+            with tok_lock:
+                creds.refresh(authreq)  # token expired mid-run; force refresh
+            r = evaluate(url, inspect_url(url, site_url, current_token(creds, authreq, tok_lock)))
+        return r
 
     results, problems, errors = [], [], []
-    for url in urls:
-        r = evaluate(url, inspect_url(url, site_url, current_token(creds, authreq)))
-        if "error" in r and r["error"].startswith("HTTP 401"):
-            creds.refresh(authreq)  # token likely expired mid-run; refresh and retry once
-            r = evaluate(url, inspect_url(url, site_url, current_token(creds, authreq)))
-        results.append(r)
-        if "error" in r:
-            errors.append(r)
-            print(f"  ERR   {url} -> {r['error']}")
-        elif not r["ok"]:
-            problems.append(r)
-            tags = []
-            if not r["ok_index"]:
-                tags.append(f"index={r['verdict']}")
-            if not r["ok_rich"]:
-                tags.append(f"rich={len(r['rich_errors'])} err")
-            print(f"  ISSUE {url} -> {', '.join(tags)}")
-        else:
-            note = f" (+{len(r['rich_warnings'])} rich warn)" if r["rich_warnings"] else ""
-            print(f"  ok    {url}{note}")
-        time.sleep(0.3)  # be gentle with the API (quota: 2000/day, 600/min)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        for r in ex.map(inspect_one, urls):
+            results.append(r)
+            if "error" in r:
+                errors.append(r)
+                print(f"  ERR   {r['url']} -> {r['error']}")
+            elif not r["ok"]:
+                problems.append(r)
+                tags = []
+                if not r["ok_index"]:
+                    tags.append(f"index={r['verdict']}")
+                if not r["ok_rich"]:
+                    tags.append(f"rich={len(r['rich_errors'])} err")
+                print(f"  ISSUE {r['url']} -> {', '.join(tags)}")
+            else:
+                note = f" (+{len(r['rich_warnings'])} rich warn)" if r["rich_warnings"] else ""
+                print(f"  ok    {r['url']}{note}")
 
     if problems or errors or always_report:
         header, blocks = build_blocks(problems, errors, results, always_report)
