@@ -56,6 +56,12 @@ from google.oauth2 import service_account
 INSPECT_ENDPOINT = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 SLACK_ENDPOINT = "https://slack.com/api/chat.postMessage"
 SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
+# Stripo serves the real XML sitemaps only to browser/Googlebot UAs; an unknown
+# UA gets an HTML splash page instead. Use a browser UA when fetching sitemaps.
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 def env(name, default=None, required=False):
@@ -87,7 +93,7 @@ def fetch_bytes(url, tries=3):
     last_err = None
     for attempt in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "stripo-gsc-monitor"})
+            req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = resp.read()
             if data[:2] == b"\x1f\x8b":  # gzip magic bytes
@@ -101,63 +107,75 @@ def fetch_bytes(url, tries=3):
             raise last_err
 
 
+def is_sitemap_url(u):
+    """A <loc> that points to another sitemap (ends in .xml, trailing slash ok)."""
+    return urllib.parse.urlparse(u).path.rstrip("/").lower().endswith(".xml")
+
+
 def parse_sitemap(data):
-    """Return ('index', [child_urls]) or ('urlset', [(loc, lastmod), ...])."""
+    """Return list of (loc, lastmod). Raises if the payload is not a sitemap.
+
+    Handles both a proper <sitemapindex> and a non-standard <urlset> whose <loc>s
+    actually point to child sitemaps (as on stripo.email). Caller separates child
+    sitemaps from real pages via is_sitemap_url().
+    """
     root = ET.fromstring(data)
-    if _localname(root.tag) == "sitemapindex":
-        children = []
-        for sm in root:
-            for child in sm:
-                if _localname(child.tag) == "loc" and child.text:
-                    children.append(child.text.strip())
-        return "index", children
-    urls = []
-    for u in root:
+    tag = _localname(root.tag)
+    if tag not in ("sitemapindex", "urlset"):
+        raise ValueError(f"not a sitemap (root <{tag}>)")
+    entries = []
+    for node in root:  # <sitemap> or <url>
         loc = lastmod = None
-        for child in u:
+        for child in node:
             ln = _localname(child.tag)
             if ln == "loc" and child.text:
                 loc = child.text.strip()
             elif ln == "lastmod" and child.text:
                 lastmod = child.text.strip()
         if loc:
-            urls.append((loc, lastmod or ""))
-    return "urlset", urls
+            entries.append((loc, lastmod or ""))
+    return entries
 
 
-def newest(urls, n):
-    """Pick the n newest URLs by lastmod (desc); missing lastmod sorts last."""
-    ordered = sorted(urls, key=lambda x: x[1], reverse=True)
-    return [loc for loc, _ in ordered[:n]]
+def pick(pages, sample_per):
+    """pages: list of (loc, lastmod). sample_per<=0 -> all; else newest-N by lastmod."""
+    if sample_per and sample_per > 0:
+        ordered = sorted(pages, key=lambda x: x[1], reverse=True)
+        return [loc for loc, _ in ordered[:sample_per]]
+    return [loc for loc, _ in pages]
 
 
 def collect_from_sitemap(root_url, sample_per, include, exclude, max_urls):
-    kind, payload = parse_sitemap(fetch_bytes(root_url))
-    if kind == "urlset":
-        picked = newest(payload, max_urls)
-        print(f"  {root_url}: {len(payload)} urls -> sampled {len(picked)}")
-        return picked
+    try:
+        entries = parse_sitemap(fetch_bytes(root_url))
+    except Exception as e:  # noqa: BLE001
+        print(f"ERROR: could not read sitemap {root_url}: {e}", file=sys.stderr)
+        return []
+
+    children = [loc for loc, _ in entries if is_sitemap_url(loc)]
+    pages = [(loc, lm) for loc, lm in entries if not is_sitemap_url(loc)]
+
+    # A flat URL sitemap (real pages, no nested sitemaps): sample and return.
+    if not children:
+        return pick(pages, sample_per)
 
     collected = []
-    for child in payload:
-        name = child.rsplit("/", 1)[-1]
+    for child in children:
+        name = child.rstrip("/").rsplit("/", 1)[-1]
         if include and not any(inc in child for inc in include):
             continue
         if exclude and any(exc in child for exc in exclude):
             print(f"  {name}: skipped (excluded)")
             continue
         try:
-            ckind, cpayload = parse_sitemap(fetch_bytes(child))
+            centries = parse_sitemap(fetch_bytes(child))
         except Exception as e:  # noqa: BLE001
             print(f"  {name}: skipped ({e})")
             continue
-        if ckind == "urlset":
-            if sample_per and sample_per > 0:
-                picked = newest(cpayload, sample_per)
-            else:
-                picked = [loc for loc, _ in cpayload]  # 0/absent => take ALL
-            print(f"  {name}: {len(cpayload)} urls -> take {len(picked)}")
-            collected.extend(picked)
+        cpages = [(loc, lm) for loc, lm in centries if not is_sitemap_url(loc)]
+        picked = pick(cpages, sample_per)
+        print(f"  {name}: {len(cpages)} pages -> take {len(picked)}")
+        collected.extend(picked)
         if len(collected) >= max_urls:
             print(f"  reached GSC_MAX_URLS={max_urls}, stopping")
             break
@@ -184,15 +202,20 @@ def resolve_urls():
     else:
         body = load_urls(env("GSC_URLS_FILE", ".github/gsc-urls.txt"))
 
-    # extra first, then sitemap body; de-dupe preserving order; hard cap
-    seen, out = set(), []
+    # extra first, then sitemap body; drop sitemap URLs; de-dupe; hard cap
+    seen, out, skipped = set(), [], 0
     for u in extra + body:
+        if is_sitemap_url(u):  # never inspect a sitemap as if it were a page
+            skipped += 1
+            continue
         if u not in seen:
             seen.add(u)
             out.append(u)
         if len(out) >= max_urls:
             print(f"  reached GSC_MAX_URLS={max_urls}, truncating")
             break
+    if skipped:
+        print(f"  guard: skipped {skipped} sitemap URL(s) that were not real pages")
     return out
 
 
