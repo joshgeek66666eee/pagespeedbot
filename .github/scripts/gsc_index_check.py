@@ -222,14 +222,24 @@ def resolve_urls():
 # --------------------------------------------------------------------------- #
 # GSC inspection
 # --------------------------------------------------------------------------- #
-def get_access_token(sa_json):
+def build_credentials(sa_json):
     try:
         info = json.loads(sa_json)
     except json.JSONDecodeError as e:
         print(f"ERROR: GSC_SERVICE_ACCOUNT_JSON is not valid JSON: {e}", file=sys.stderr)
         sys.exit(1)
     creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-    creds.refresh(google.auth.transport.requests.Request())
+    return creds, google.auth.transport.requests.Request()
+
+
+def current_token(creds, authreq):
+    """Return a valid access token, refreshing it when it is missing/expired.
+
+    Service-account tokens live ~1h; a full run over 1000+ URLs outlasts that,
+    so we re-check before every request instead of fetching a token once.
+    """
+    if not creds.valid:
+        creds.refresh(authreq)
     return creds.token
 
 
@@ -423,12 +433,15 @@ def main():
         print("No URLs resolved (empty sitemap/list)", file=sys.stderr)
         sys.exit(1)
 
-    token = get_access_token(sa_json)
+    creds, authreq = build_credentials(sa_json)
     print(f"Inspecting {len(urls)} URL(s) against {site_url}")
 
     results, problems, errors = [], [], []
     for url in urls:
-        r = evaluate(url, inspect_url(url, site_url, token))
+        r = evaluate(url, inspect_url(url, site_url, current_token(creds, authreq)))
+        if "error" in r and r["error"].startswith("HTTP 401"):
+            creds.refresh(authreq)  # token likely expired mid-run; refresh and retry once
+            r = evaluate(url, inspect_url(url, site_url, current_token(creds, authreq)))
         results.append(r)
         if "error" in r:
             errors.append(r)
