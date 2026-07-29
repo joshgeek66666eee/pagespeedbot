@@ -1,0 +1,56 @@
+name: GSC indexing monitor
+
+# Weekly Google Search Console indexing check. For each URL in the list,
+# it calls the URL Inspection API and posts to Slack when a page is not
+# cleanly on Google (verdict != PASS) or the inspection errors out.
+#
+# NOTE: scheduled workflows run ONLY from the repository's default branch.
+# Until this is on `main`, use the "Run workflow" button (workflow_dispatch).
+
+on:
+  schedule:
+    # 07:00 UTC every Monday (~10:00 Europe/Kyiv).
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      always_report:
+        description: "Post a digest even if every page is indexed"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gsc-index-monitor
+  cancel-in-progress: false
+
+jobs:
+  gsc-index:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet google-auth
+
+      - name: Run GSC indexing check
+        env:
+          GSC_SERVICE_ACCOUNT_JSON: ${{ secrets.GSC_SERVICE_ACCOUNT_JSON }}
+          # Set this to YOUR property. Domain property -> "sc-domain:stripo.email".
+          # URL-prefix property -> "https://stripo.email/" (exact, with scheme + trailing slash).
+          GSC_SITE_URL: "sc-domain:stripo.email"
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          SLACK_CHANNEL: "#seo-team"
+          # Reuses the PageSpeed URL list by default; point at a dedicated
+          # list here if you want to inspect a different set of pages.
+          GSC_URLS_FILE: ".github/pagespeed-urls.txt"
+          ALWAYS_REPORT: ${{ github.event.inputs.always_report || 'false' }}
+        run: python .github/scripts/gsc_index_check.py
