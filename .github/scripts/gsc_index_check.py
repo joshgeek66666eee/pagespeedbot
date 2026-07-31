@@ -37,10 +37,16 @@ Env:
   GSC_SITEMAP_EXCLUDE       (optional)  comma list; drop child sitemaps matching any
                                         (default: image,video,webStory,videoGallery)
   GSC_URLS_FILE             (optional)  fallback list, default .github/gsc-urls.txt
+  GSC_REPORT_DOC_ID         (optional)  Google Doc id; when set, the full report is
+                                        written there and Slack shows a summary + link.
+                                        The service account must have Editor access to it.
+  GSC_WORKERS               (optional)  parallel inspection workers, default 8
+  GSC_MAX_RPS               (optional)  max inspection requests/sec, default 8 (<600/min)
   ALWAYS_REPORT             (optional)  "true" -> post a digest even if all clean
 """
 
 import concurrent.futures
+import datetime
 import gzip
 import json
 import os
@@ -57,7 +63,12 @@ from google.oauth2 import service_account
 
 INSPECT_ENDPOINT = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
 SLACK_ENDPOINT = "https://slack.com/api/chat.postMessage"
-SCOPES = ["https://www.googleapis.com/auth/webmasters.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/webmasters.readonly",
+    "https://www.googleapis.com/auth/documents",  # only used when GSC_REPORT_DOC_ID is set
+]
+DOCS_GET = "https://docs.googleapis.com/v1/documents/{doc_id}"
+DOCS_BATCH = "https://docs.googleapis.com/v1/documents/{doc_id}:batchUpdate"
 # Stripo serves the real XML sitemaps only to browser/Googlebot UAs; an unknown
 # UA gets an HTML splash page instead. Use a browser UA when fetching sitemaps.
 BROWSER_UA = (
@@ -389,7 +400,7 @@ def problem_lines(r):
     return "\n".join(lines)
 
 
-def build_blocks(problems, errors, results, always_report):
+def build_blocks(problems, errors, results, always_report, doc_url=None):
     n = len(problems)
     if n:
         header = f":mag: GSC — {n} of {len(results)} sampled page(s) with issues"
@@ -397,6 +408,21 @@ def build_blocks(problems, errors, results, always_report):
         header = f":white_check_mark: GSC — all {len(results)} sampled pages indexed, structured data clean"
 
     blocks = [{"type": "header", "text": {"type": "plain_text", "text": header, "emoji": True}}]
+
+    # Doc mode: short summary + preview + link; full detail lives in the Google Doc.
+    if doc_url:
+        n_warn = sum(len(r["rich_warnings"]) for r in results if r.get("rich_warnings") and r.get("ok"))
+        blocks.append(_section(
+            f"*Checked:* {len(results)}  ·  *Issues:* {len(problems)}  ·  "
+            f"*Warnings:* {n_warn}  ·  *Could not inspect:* {len(errors)}"))
+        if problems:
+            blocks += pack([problem_lines(r) for r in problems[:5]])
+            if len(problems) > 5:
+                blocks.append(_section(f"_…and {len(problems) - 5} more — see the full report._"))
+        blocks.append(_section(f":page_facing_up: *<{doc_url}|Open full report (Google Doc)>*"))
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+                       "text": "Source: GSC URL Inspection API (index status + rich results)"}]})
+        return header, blocks
 
     if problems:
         blocks += capped_sections([problem_lines(r) for r in problems], "page(s) with issues")
@@ -425,6 +451,64 @@ def build_blocks(problems, errors, results, always_report):
                  "newest pages sampled per type from sitemap_index.xml"}]}
     )
     return header, blocks
+
+
+def build_report_text(problems, errors, results, when):
+    """Full plain-text report for the Google Doc (nothing is capped here)."""
+    warned = [r for r in results if r.get("rich_warnings") and r.get("ok")]
+    n_warn = sum(len(r["rich_warnings"]) for r in warned)
+    out = [
+        "GSC indexing & rich-results report",
+        when,
+        "",
+        f"Checked: {len(results)}   |   Issues: {len(problems)}   |   "
+        f"Warnings: {n_warn}   |   Could not inspect: {len(errors)}",
+        "=" * 64,
+    ]
+    if problems:
+        out += ["", f"PAGES WITH ISSUES ({len(problems)})"]
+        for r in problems:
+            out.append("")
+            out.append(f"- {r['url']}")
+            if not r["ok_index"]:
+                mm = " | canonical mismatch" if r["canon_mismatch"] else ""
+                out.append(f"    index: {r['coverage']} | verdict {r['verdict']} | "
+                           f"fetch {r['fetch']} | last crawl {r['last_crawl']}{mm}")
+            for err in r["rich_errors"]:
+                out.append(f"    rich error: {err}")
+    if warned:
+        out += ["", f"RICH-RESULT WARNINGS ({n_warn}) — non-blocking"]
+        for r in warned:
+            for w in r["rich_warnings"]:
+                out.append(f"- {r['url']} — {w}")
+    if errors:
+        out += ["", f"COULD NOT INSPECT ({len(errors)})"]
+        for e in errors:
+            out.append(f"- {e['url']} — {e['error']}")
+    out += ["", "Source: GSC URL Inspection API (index status + rich results)"]
+    return "\n".join(out) + "\n"
+
+
+def _docs_api(url, token, method="GET", body=None):
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def write_report_doc(doc_id, token, text):
+    """Replace the whole body of an existing Google Doc with `text`."""
+    doc = _docs_api(DOCS_GET.format(doc_id=doc_id), token)
+    content = doc.get("body", {}).get("content", [])
+    end = content[-1]["endIndex"] if content else 2
+    requests = []
+    if end - 1 > 1:  # clear existing body (keep the final newline at end-1)
+        requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end - 1}}})
+    requests.append({"insertText": {"location": {"index": 1}, "text": text}})
+    _docs_api(DOCS_BATCH.format(doc_id=doc_id), token, method="POST", body={"requests": requests})
 
 
 def post_to_slack(token, channel, header, blocks):
@@ -489,8 +573,21 @@ def main():
                 note = f" (+{len(r['rich_warnings'])} rich warn)" if r["rich_warnings"] else ""
                 print(f"  ok    {r['url']}{note}")
 
+    # Optional: write the full report into a Google Doc and link it from Slack.
+    doc_url = None
+    doc_id = env("GSC_REPORT_DOC_ID")
+    if doc_id:
+        when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        try:
+            write_report_doc(doc_id, current_token(creds, authreq, tok_lock),
+                             build_report_text(problems, errors, results, when))
+            doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+            print(f"Report written to {doc_url}")
+        except Exception as e:  # noqa: BLE001 — fall back to inline Slack lists
+            print(f"WARNING: could not write Google Doc ({e}); posting full lists inline", file=sys.stderr)
+
     if problems or errors or always_report:
-        header, blocks = build_blocks(problems, errors, results, always_report)
+        header, blocks = build_blocks(problems, errors, results, always_report, doc_url)
         post_to_slack(slack_token, slack_channel, header, blocks)
     else:
         print("All sampled pages clean; nothing to post.")
