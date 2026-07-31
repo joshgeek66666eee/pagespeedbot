@@ -59,5 +59,9 @@ jobs:
           GSC_MAX_URLS: "1800"            # safety cap under the 2000/day quota
           # Pages that have no dedicated sitemap, checked explicitly:
           GSC_EXTRA_URLS: "https://stripo.email/,https://stripo.email/templates/"
+          # Full report goes into this Google Doc; Slack gets a summary + link.
+          # Paste your Doc id (from the doc URL) and share the doc with the
+          # service account (Editor). Leave empty to post full lists inline.
+          GSC_REPORT_DOC_ID: "1I529cwniBxGgmGI-6fHX30Szl1PSvMxGgSc1cwzBRwA"
           ALWAYS_REPORT: ${{ github.event.inputs.always_report || 'false' }}
         run: python .github/scripts/gsc_index_check.py
