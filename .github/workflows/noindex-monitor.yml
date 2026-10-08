@@ -44,7 +44,7 @@ jobs:
           SLACK_CHANNEL: "#seo-team"
           SITEMAP_URL: "https://stripo.email/sitemap_index.xml"
           # Page types to watch (same as the GSC monitor). Empty = all non-technical.
-          SITEMAP_INCLUDE: "article,templateCategory,integration,toolReviewCategory,page,glossary,webinar,category"
+          SITEMAP_INCLUDE: "article,templateCategory,integration,toolReviewCategory,page,glossary,webinar,category,alternative"
           EXTRA_URLS: "https://stripo.email/,https://stripo.email/templates/"
           MAX_URLS: "3000"
           ALWAYS_REPORT: ${{ github.event.inputs.always_report || 'false' }}
