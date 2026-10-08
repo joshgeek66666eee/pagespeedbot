@@ -44,6 +44,7 @@ BROWSER_UA = (
 META_RE = re.compile(r"<meta\b[^>]*>", re.I)
 NAME_RE = re.compile(r'name\s*=\s*["\']?\s*(robots|googlebot)\b', re.I)
 CONTENT_RE = re.compile(r'content\s*=\s*["\']([^"\']*)["\']', re.I)
+HREF_RE = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.I)
 
 
 def env(name, default=None, required=False):
@@ -128,9 +129,38 @@ def collect_from_sitemap(root_url, include, exclude, max_urls):
     return collected[:max_urls]
 
 
+def discover_links(hub_urls, pattern):
+    """Crawl hub page(s), return same-host links matching `pattern` (for sections
+    that are not in any sitemap, e.g. /alternatives/)."""
+    pat = re.compile(pattern) if pattern else None
+    found = set()
+    for hub in hub_urls:
+        host = urllib.parse.urlparse(hub).netloc
+        try:
+            html = fetch_bytes(hub).decode("utf-8", "replace")
+        except Exception as e:  # noqa: BLE001
+            print(f"  discover: {hub} failed ({e})")
+            continue
+        before = len(found)
+        for href in HREF_RE.findall(html):
+            u = urllib.parse.urljoin(hub, href.split("#")[0].strip()).split("?")[0]
+            p = urllib.parse.urlparse(u)
+            if p.scheme not in ("http", "https") or p.netloc != host:
+                continue
+            if is_sitemap_url(u):
+                continue
+            if pat and not pat.search(u):
+                continue
+            found.add(u)
+        print(f"  discover {hub}: +{len(found) - before} links")
+    return sorted(found)
+
+
 def resolve_urls():
     max_urls = int(env("MAX_URLS", "3000"))
     extra = [u.strip() for u in env("EXTRA_URLS", "").replace("\n", ",").split(",") if u.strip()]
+    discover_from = [u.strip() for u in env("DISCOVER_FROM", "").replace("\n", ",").split(",") if u.strip()]
+    discovered = discover_links(discover_from, env("DISCOVER_PATTERN", "")) if discover_from else []
     sitemap_url = env("SITEMAP_URL")
     body = []
     if sitemap_url:
@@ -140,7 +170,7 @@ def resolve_urls():
         print(f"Building URL list from sitemap {sitemap_url}")
         body = collect_from_sitemap(sitemap_url, include, exclude, max_urls)
     seen, out = set(), []
-    for u in extra + body:
+    for u in extra + discovered + body:
         if is_sitemap_url(u):
             continue
         if u not in seen:
