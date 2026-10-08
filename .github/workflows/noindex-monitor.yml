@@ -46,7 +46,10 @@ jobs:
           # Page types to watch (same as the GSC monitor). Empty = all non-technical.
           SITEMAP_INCLUDE: "article,templateCategory,integration,toolReviewCategory,page,glossary,webinar,category,alternative"
           EXTRA_URLS: "https://stripo.email/,https://stripo.email/templates/"
-          MAX_URLS: "3000"
+          # Sections NOT in any sitemap: crawl a hub page and grab matching links.
+          DISCOVER_FROM: "https://stripo.email/alternatives/"
+          DISCOVER_PATTERN: "/alternatives/[^/]+/"
+          MAX_URLS: "8000"
           ALWAYS_REPORT: ${{ github.event.inputs.always_report || 'false' }}
         run: python .github/scripts/noindex_check.py
 
