@@ -323,6 +323,26 @@ def build_blocks(new, recovered, current, errors, total, always_report, first_ru
     return header, blocks
 
 
+def build_blocks_current(current, errors, total, always_report):
+    """'current' mode: list every page that currently has noindex/nofollow."""
+    n = len(current)
+    if n:
+        header = f":no_entry_sign: Robots — {n} of {total} page(s) have noindex/nofollow (should be indexable!)"
+    else:
+        header = f":white_check_mark: Robots — all {total} pages indexable & followable"
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": header, "emoji": True}}]
+    if current:
+        blocks += capped([f"• <{u}|{short(u)}> — *{current[u]}*" for u in sorted(current)], "pages")
+    if always_report and not current:
+        blocks.append(_section(f"All {total} pages are indexable and followable."))
+    if errors:
+        blocks.append(_section(":warning: *Could not fetch:*"))
+        blocks += capped([f"• <{e['url']}|{short(e['url'])}> — `{e['error']}`" for e in errors], "errors")
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+                   "text": "Source: direct page fetch (meta robots + X-Robots-Tag)"}]})
+    return header, blocks
+
+
 def post_to_slack(token, channel, header, blocks):
     payload = json.dumps({"channel": channel, "text": header, "blocks": blocks}).encode("utf-8")
     req = urllib.request.Request(
@@ -394,6 +414,18 @@ def main():
     recovered = sorted(prev_flagged - set(current))
     print(f"Flagged now: {len(current)} | new: {len(new)} | recovered: {len(recovered)}")
 
+    mode = env("ALERT_MODE", "current").lower()
+
+    if mode != "new":
+        # 'current' mode: report EVERY page that currently has noindex/nofollow.
+        if current or errors or always_report:
+            header, blocks = build_blocks_current(current, errors, checked, always_report)
+            post_to_slack(slack_token, slack_channel, header, blocks)
+        else:
+            print("No noindex/nofollow found; nothing to post.")
+        return
+
+    # 'new' mode: alert only on change (needs the committed state file).
     if first_run:
         print(f"First run — baseline saved ({len(current)} flagged), no alert.")
         if not always_report:
