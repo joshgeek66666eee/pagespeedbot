@@ -8,8 +8,8 @@ name: noindex / nofollow monitor
 
 on:
   schedule:
-    # 05:30 UTC daily (~08:30 Europe/Kyiv).
-    - cron: "30 5 * * *"
+    # 05:30 UTC every 2nd day (~08:30 Europe/Kyiv).
+    - cron: "30 5 */2 * *"
   workflow_dispatch:
     inputs:
       always_report:
@@ -42,6 +42,9 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           SLACK_CHANNEL: "#seo-team"
+          # "current" = report every page that has noindex/nofollow right now
+          # (all these pages must be indexable). "new" = only alert on change.
+          ALERT_MODE: "current"
           SITEMAP_URL: "https://stripo.email/sitemap_index.xml"
           # Page types to watch (same as the GSC monitor). Empty = all non-technical.
           SITEMAP_INCLUDE: "article,templateCategory,integration,toolReviewCategory,page,glossary,webinar,category,alternative"
