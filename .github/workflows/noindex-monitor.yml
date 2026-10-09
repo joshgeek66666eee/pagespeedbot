@@ -45,9 +45,10 @@ jobs:
           SITEMAP_URL: "https://stripo.email/sitemap_index.xml"
           # Page types to watch (same as the GSC monitor). Empty = all non-technical.
           SITEMAP_INCLUDE: "article,templateCategory,integration,toolReviewCategory,page,glossary,webinar,category,alternative"
-          EXTRA_URLS: "https://stripo.email/,https://stripo.email/templates/"
-          # Sections NOT in any sitemap: crawl a hub page and grab matching links.
-          DISCOVER_FROM: "https://stripo.email/alternatives/"
+          # Homepage, templates home, and all /alternatives/ pages (not in any sitemap).
+          EXTRA_URLS: "https://stripo.email/,https://stripo.email/templates/,https://stripo.email/alternatives/beefree-review-pricing-features-alternatives/,https://stripo.email/alternatives/chamaileon-review-pricing-features-and-alternatives/,https://stripo.email/alternatives/postcards-review-pricing-features-alternatives/,https://stripo.email/alternatives/dyspatch-review-pricing-features-alternatives/,https://stripo.email/alternatives/knak-enterprise-features-alternatives/,https://stripo.email/alternatives/mailchimp-review-pricing-features-and-alternatives/,https://stripo.email/alternatives/mosaico-review-pricing-features-alternatives/,https://stripo.email/alternatives/salesforce-marketing-cloud-review-pricing-features-alternatives/,https://stripo.email/alternatives/brevo-review/,https://stripo.email/alternatives/stensul-enterprise-features-alternatives/,https://stripo.email/alternatives/taxiforemail-review-pricing-features-and-alternatives/,https://stripo.email/alternatives/unlayer-review-pricing-features-alternatives/"
+          # Bonus: crawl one alternatives page to auto-catch any NEW siblings it links to.
+          DISCOVER_FROM: "https://stripo.email/alternatives/beefree-review-pricing-features-alternatives/"
           DISCOVER_PATTERN: "/alternatives/[^/]+/"
           MAX_URLS: "8000"
           ALWAYS_REPORT: ${{ github.event.inputs.always_report || 'false' }}
