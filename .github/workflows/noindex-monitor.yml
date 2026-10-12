@@ -27,7 +27,7 @@ concurrency:
 jobs:
   noindex:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,6 +54,9 @@ jobs:
           DISCOVER_FROM: "https://stripo.email/alternatives/beefree-review-pricing-features-alternatives/"
           DISCOVER_PATTERN: "/alternatives/[^/]+/"
           MAX_URLS: "8000"
+          # Slower pace to avoid Stripo's WAF 403-ing us under load.
+          WORKERS: "4"
+          MAX_RPS: "3"
           ALWAYS_REPORT: ${{ github.event.inputs.always_report || 'false' }}
         run: python .github/scripts/noindex_check.py
 
