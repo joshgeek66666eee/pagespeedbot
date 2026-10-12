@@ -41,6 +41,11 @@ BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+BROWSER_HEADERS = {
+    "User-Agent": BROWSER_UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 META_RE = re.compile(r"<meta\b[^>]*>", re.I)
 NAME_RE = re.compile(r'name\s*=\s*["\']?\s*(robots|googlebot)\b', re.I)
 CONTENT_RE = re.compile(r'content\s*=\s*["\']([^"\']*)["\']', re.I)
@@ -208,12 +213,12 @@ def directives_from_header(header_val):
     return found
 
 
-def check_url(url, tries=3):
+def check_url(url, tries=4):
     """Fetch a page; return dict with any noindex/nofollow directives + source."""
     last = None
     for attempt in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
+            req = urllib.request.Request(url, headers=BROWSER_HEADERS)
             with urllib.request.urlopen(req, timeout=45) as resp:
                 status = resp.status
                 header_val = resp.headers.get("X-Robots-Tag")
@@ -231,7 +236,10 @@ def check_url(url, tries=3):
                     flags[d] = "+".join(where)
             return {"url": url, "status": status, "flags": flags}
         except urllib.error.HTTPError as e:
-            # a 4xx/5xx is a fetch problem, not a robots signal
+            # 403/429/5xx under load = WAF rate-limiting, not a real page error -> retry
+            if e.code in (403, 429, 500, 502, 503, 504) and attempt < tries - 1:
+                time.sleep(2 ** (attempt + 1))
+                continue
             return {"url": url, "error": f"HTTP {e.code}"}
         except Exception as e:  # noqa: BLE001
             last = str(e)
