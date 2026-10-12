@@ -213,7 +213,7 @@ def directives_from_header(header_val):
     return found
 
 
-def check_url(url, tries=4):
+def check_url(url, tries=3):
     """Fetch a page; return dict with any noindex/nofollow directives + source."""
     last = None
     for attempt in range(tries):
@@ -397,9 +397,16 @@ def main():
         print("No URLs resolved", file=sys.stderr)
         sys.exit(1)
 
-    workers = int(env("WORKERS", "10"))
-    limiter = RateLimiter(float(env("MAX_RPS", "10")))
-    print(f"Checking {len(urls)} page(s) for noindex/nofollow ({workers} workers)")
+    workers = int(env("WORKERS", "4"))
+    spread_hours = float(env("SPREAD_HOURS", "0"))
+    if spread_hours > 0:
+        rps = max(len(urls) / (spread_hours * 3600.0), 0.01)
+        print(f"Checking {len(urls)} page(s), spread over {spread_hours}h "
+              f"(~{rps:.3f} req/s, {workers} workers)")
+    else:
+        rps = float(env("MAX_RPS", "3"))
+        print(f"Checking {len(urls)} page(s) for noindex/nofollow ({workers} workers, ~{rps}/s)")
+    limiter = RateLimiter(rps)
 
     def worker(url):
         limiter.wait()
