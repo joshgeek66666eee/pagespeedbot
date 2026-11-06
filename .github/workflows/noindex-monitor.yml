@@ -7,9 +7,10 @@ name: noindex / nofollow monitor
 # for the cron to fire; until then use the "Run workflow" button.
 
 on:
-  schedule:
-    # Wednesdays 05:00 UTC = 08:00 Europe/Kyiv (EEST). Run spreads over ~4h.
-    - cron: "0 5 * * 3"
+  # Schedule disabled: this check now runs as a Claude scheduled task.
+  # schedule:
+  #   # Wednesdays 05:00 UTC = 08:00 Europe/Kyiv (EEST). Run spreads over ~4h.
+  #   - cron: "0 5 * * 3"
   workflow_dispatch:
     inputs:
       always_report:

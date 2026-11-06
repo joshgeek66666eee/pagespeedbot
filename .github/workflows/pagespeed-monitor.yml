@@ -12,9 +12,10 @@ name: PageSpeed biweekly monitor
 # Until then, use the "Run workflow" button (workflow_dispatch) to test.
 
 on:
-  schedule:
-    # 06:00 UTC every Thursday (~09:00 Europe/Kyiv); gated to even ISO weeks.
-    - cron: "0 6 * * 4"
+  # Schedule disabled: this check now runs as a Claude scheduled task.
+  # schedule:
+  #   # 06:00 UTC every Thursday (~09:00 Europe/Kyiv); gated to even ISO weeks.
+  #   - cron: "0 6 * * 4"
   workflow_dispatch:
     inputs:
       always_report:

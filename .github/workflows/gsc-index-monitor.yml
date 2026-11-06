@@ -8,9 +8,10 @@ name: GSC indexing monitor
 # Until this is on `main`, use the "Run workflow" button (workflow_dispatch).
 
 on:
-  schedule:
-    # 07:00 UTC every Monday (~10:00 Europe/Kyiv).
-    - cron: "0 7 * * 1"
+  # Schedule disabled: this check now runs as a Claude scheduled task.
+  # schedule:
+  #   # 07:00 UTC every Monday (~10:00 Europe/Kyiv).
+  #   - cron: "0 7 * * 1"
   workflow_dispatch:
     inputs:
       always_report:
